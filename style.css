@@ -10,6 +10,10 @@ body {
   color: #eef4ff;
 }
 
+body.theme-orange {
+  font-family: "Exo 2", Arial, sans-serif;
+}
+
 .game-shell {
   width: min(1040px, calc(100vw - 24px));
   margin: 0 auto;
@@ -89,6 +93,32 @@ canvas {
   width: 160px;
   height: 6px;
   accent-color: #53d58d;
+}
+
+.theme-buttons {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.theme-buttons button {
+  padding: 8px 18px;
+  font-size: 0.95rem;
+  font-family: inherit;
+  color: #10192f;
+  background: #c9d7ff;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.theme-buttons button:hover {
+  background: #dce6ff;
+}
+
+.theme-buttons button[aria-pressed="true"] {
+  background: #53d58d;
+  color: #0d1f14;
 }
 
 @media (max-width: 768px) {
