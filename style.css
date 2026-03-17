@@ -143,7 +143,7 @@ canvas {
   .mobile-controls {
     display: flex;
     position: fixed;
-    bottom: 16px;
+    bottom: 34px;
     left: 12px;
     right: 12px;
     justify-content: space-between;
@@ -153,10 +153,11 @@ canvas {
   }
 
   body.game-paused .mobile-controls-left {
-    display: none;
+    display: flex;
   }
 
-  body.game-paused .mobile-controls-right .mobile-btn:not(.mobile-btn-pause) {
+  body.game-paused .mobile-controls-center,
+  body.game-paused .mobile-controls-right {
     display: none;
   }
 
