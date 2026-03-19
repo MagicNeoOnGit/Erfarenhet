@@ -10,19 +10,15 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: true
-      matrix:
-        channel:
-          - windows
-          - webgl
     steps:
       - uses: actions/upload-artifact@v7.0.0
         with:
           name: ${{ matrix.channel }}
-          path: build/${{ matrix.channel }}
+          path: /
       - uses: KikimoraGames/itch-publish@v0.0.3
         with:
           butlerApiKey: ${{secrets.BUTLER_API_KEY}}
-          gameData: ./${{ matrix.template }}
+          gameData: ./
           itchUsername: ${{env.ITCH_USERNAME}}
           itchGameId: ${{ env.ITCH_GAME_ID }}
           buildChannel: ${{ matrix.channel }}
