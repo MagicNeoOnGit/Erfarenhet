@@ -73,8 +73,37 @@ const input = {
   crouch: false
 };
 
+const inputP1 = {
+  left: false,
+  right: false,
+  jump: false,
+  jumpPressed: false,
+  crouch: false
+};
+const inputP2 = {
+  left: false,
+  right: false,
+  jump: false,
+  jumpPressed: false,
+  crouch: false
+};
+
+const MP_STORAGE_KEY = "blobCoinDash_multiplayer";
+
+/** Shown on win/lose end card instead of “You”. */
+const DISPLAY_NAME_SOLO = "Blob";
+const DISPLAY_NAME_P1 = "Arrow";
+const DISPLAY_NAME_P2 = "WASD";
+
+let multiplayerMode = false;
+let deaths1 = 0;
+let deaths2 = 0;
+let coinsCollectedP1 = 0;
+let coinsCollectedP2 = 0;
+
 let level;
 let player;
+let player2;
 let coins;
 let deaths;
 let collectedCoins;
@@ -112,9 +141,9 @@ const THEME_STORAGE_KEY = "blobCoinDash_theme";
 let platformTheme = "classic";
 
 const arrowImage = new Image();
-arrowImage.src = "arrow.png";
+arrowImage.src = "assets/arrow.png";
 const bottleImage = new Image();
-bottleImage.src = "bottle.png";
+bottleImage.src = "assets/bottle.png";
 const bananaImage = new Image();
 bananaImage.src = "assets/banana.png";
 
@@ -273,12 +302,68 @@ function playLoseSound() {
   });
 }
 
+function clearInputState(inp) {
+  inp.left = false;
+  inp.right = false;
+  inp.jump = false;
+  inp.jumpPressed = false;
+  inp.crouch = false;
+}
+
 function clearInput() {
-  input.left = false;
-  input.right = false;
-  input.jump = false;
-  input.jumpPressed = false;
-  input.crouch = false;
+  clearInputState(input);
+  clearInputState(inputP1);
+  clearInputState(inputP2);
+}
+
+function placePlayerAtSpawnSlot(p, slot) {
+  const base = level.spawn.x;
+  p.x = slot === 0 ? base : Math.min(base + 52, WIDTH - PLAYER_SIZE - 10);
+  p.y = level.spawn.y;
+  p.vx = 0;
+  p.vy = 0;
+  p.onGround = false;
+  p.squish = 1;
+  p.crouching = false;
+  p.height = PLAYER_SIZE;
+}
+
+function checkMultiplayerAllEliminated() {
+  if (!multiplayerMode || gameState !== "playing") return;
+  if (!player.alive && !player2.alive && !multiplayerWinReached()) {
+    lostReason = "deaths";
+    playLoseSound();
+    gameState = "lost";
+    syncGameUiState();
+  }
+}
+
+function killPlayerSlot(slot) {
+  if (gameState !== "playing") {
+    return;
+  }
+  const p = slot === 0 ? player : player2;
+  if (!p.alive) {
+    return;
+  }
+
+  if (slot === 0) {
+    deaths1 += 1;
+  } else {
+    deaths2 += 1;
+  }
+  const d = slot === 0 ? deaths1 : deaths2;
+
+  if (d >= MAX_DEATHS) {
+    p.alive = false;
+    p.vx = 0;
+    p.vy = 0;
+    checkMultiplayerAllEliminated();
+    return;
+  }
+
+  placePlayerAtSpawnSlot(p, slot);
+  clearInputState(slot === 0 ? inputP1 : inputP2);
 }
 
 function syncGameUiState() {
@@ -646,14 +731,19 @@ function createCoinsForLevel(currentLevel, remainingCoins) {
     x: Math.round(slot.x),
     y: Math.round(slot.y),
     radius: COIN_RADIUS,
-    collected: false,
+    byP1: false,
+    byP2: false,
     bob: Math.random() * Math.PI * 2
   }));
 }
 
 function resetGame() {
   collectedCoins = 0;
+  coinsCollectedP1 = 0;
+  coinsCollectedP2 = 0;
   deaths = 0;
+  deaths1 = 0;
+  deaths2 = 0;
   levelTimeRemaining = LEVEL_TIME_SECONDS;
   bellAt16Played = false;
   lastDeathCause = null;
@@ -668,9 +758,37 @@ function resetGame() {
     vy: 0,
     onGround: false,
     squish: 0,
-    crouching: false
+    crouching: false,
+    alive: true
   };
-  respawnPlayer();
+  player2 = {
+    x: 0,
+    y: 0,
+    width: PLAYER_SIZE,
+    height: PLAYER_SIZE,
+    vx: 0,
+    vy: 0,
+    onGround: false,
+    squish: 0,
+    crouching: false,
+    alive: true
+  };
+  if (multiplayerMode) {
+    level = createLevel();
+    coins = createCoinsForLevel(level, TOTAL_COINS);
+    placePlayerAtSpawnSlot(player, 0);
+    placePlayerAtSpawnSlot(player2, 1);
+    player.alive = true;
+    player2.alive = true;
+    input.jump = false;
+    input.jumpPressed = false;
+    input.crouch = false;
+    clearInputState(inputP1);
+    clearInputState(inputP2);
+  } else {
+    player2.alive = false;
+    respawnPlayer();
+  }
 }
 
 function respawnPlayer() {
@@ -693,6 +811,48 @@ function getCollectedCoins() {
   return collectedCoins;
 }
 
+/** Multiplayer: every pickup needs both players; win when all 10 are claimed by both. */
+function multiplayerAllCoinsClaimedByBoth() {
+  return coins.length > 0 && coins.every((c) => c.byP1 && c.byP2);
+}
+
+function multiplayerOnePlayerClearedAllPickups() {
+  return coinsCollectedP1 >= TOTAL_COINS || coinsCollectedP2 >= TOTAL_COINS;
+}
+
+function multiplayerWinReached() {
+  return multiplayerAllCoinsClaimedByBoth() || multiplayerOnePlayerClearedAllPickups();
+}
+
+function multiplayerPairsDoneCount() {
+  return coins.filter((c) => c.byP1 && c.byP2).length;
+}
+
+function drawMultiplayerCoinClaimRing(x, y, radius, coin) {
+  if (!multiplayerMode || (coin.byP1 && coin.byP2)) {
+    return;
+  }
+  const r = radius + 7;
+  const dim = "rgba(55, 70, 90, 0.5)";
+  const p1c = platformTheme === "orange" ? "#3db872" : platformTheme === "blank" ? "#37d14a" : "#3db872";
+  const p2c = platformTheme === "orange" ? "#8a78c0" : platformTheme === "blank" ? "#4a9eff" : "#4890d8";
+  ctx.save();
+  ctx.lineWidth = 5;
+  ctx.lineCap = "round";
+  ctx.strokeStyle = coin.byP1 ? p1c : dim;
+  ctx.beginPath();
+  ctx.arc(x, y, r, Math.PI / 2, (3 * Math.PI) / 2);
+  ctx.stroke();
+  ctx.strokeStyle = coin.byP2 ? p2c : dim;
+  ctx.beginPath();
+  ctx.arc(x, y, r, -Math.PI / 2, Math.PI / 2);
+  ctx.stroke();
+  ctx.font = "bold 9px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.restore();
+}
+
 function killPlayer() {
   if (gameState !== "playing") {
     return;
@@ -711,11 +871,6 @@ function killPlayer() {
   respawnPlayer();
 }
 
-function clampPlayerToWorld() {
-  if (player.y > HEIGHT + 100) {
-    killPlayer();
-  }
-}
 
 function rectsOverlap(a, b) {
   return (
@@ -742,137 +897,198 @@ function circleIntersectsRect(circle, rx, ry, rw, rh) {
   return dx * dx + dy * dy < circle.radius * circle.radius;
 }
 
-function getPlayerRects() {
-  const rects = [{ x: player.x, y: player.y, width: player.width, height: player.height }];
-  if (player.x < 0) rects.push({ x: player.x + WIDTH, y: player.y, width: player.width, height: player.height });
-  if (player.x + player.width > WIDTH) rects.push({ x: player.x - WIDTH, y: player.y, width: player.width, height: player.height });
+function rectsForEntity(p) {
+  const rects = [{ x: p.x, y: p.y, width: p.width, height: p.height }];
+  if (p.x < 0) rects.push({ x: p.x + WIDTH, y: p.y, width: p.width, height: p.height });
+  if (p.x + p.width > WIDTH) rects.push({ x: p.x - WIDTH, y: p.y, width: p.width, height: p.height });
   return rects;
 }
 
-function updatePlayer(dt) {
+function getPlayerRects() {
+  return rectsForEntity(player);
+}
+
+/** deathSlot: 0 / 1 in multiplayer; ignored when not multiplayer (uses killPlayer). */
+function updateSinglePlayer(p, inp, dt, deathSlot) {
   if (gameState !== "playing") {
-    player.vx = 0;
+    p.vx = 0;
+    return;
+  }
+  if (multiplayerMode && !p.alive) {
+    p.vx = 0;
     return;
   }
 
-  const wasOnGround = player.onGround;
-  const bottom = player.y + player.height;
+  const wasOnGround = p.onGround;
+  const bottom = p.y + p.height;
 
-  if (input.crouch && !player.crouching) {
-    player.crouching = true;
-    player.height = CROUCH_HEIGHT;
-    if (player.onGround) player.y = bottom - CROUCH_HEIGHT;
-  } else if (!input.crouch && player.crouching) {
-    if (player.onGround) {
+  if (inp.crouch && !p.crouching) {
+    p.crouching = true;
+    p.height = CROUCH_HEIGHT;
+    if (p.onGround) p.y = bottom - CROUCH_HEIGHT;
+  } else if (!inp.crouch && p.crouching) {
+    if (p.onGround) {
       const standY = bottom - PLAYER_SIZE;
-      const standingBox = { x: player.x, y: standY, width: player.width, height: PLAYER_SIZE };
-      const ceiling = level.platforms.some(
-        (p) => p.y < standY && rectsOverlap(standingBox, p)
-      );
+      const standingBox = { x: p.x, y: standY, width: p.width, height: PLAYER_SIZE };
+      const ceiling = level.platforms.some((plat) => plat.y < standY && rectsOverlap(standingBox, plat));
       if (!ceiling) {
-        player.crouching = false;
-        player.height = PLAYER_SIZE;
-        player.y = standY;
+        p.crouching = false;
+        p.height = PLAYER_SIZE;
+        p.y = standY;
       }
     } else {
-      player.crouching = false;
-      player.height = PLAYER_SIZE;
+      p.crouching = false;
+      p.height = PLAYER_SIZE;
     }
   }
 
-  player.vx = 0;
-  const moveSpeed = player.crouching ? MOVE_SPEED * 0.5 : MOVE_SPEED;
-  if (input.left) player.vx -= moveSpeed;
-  if (input.right) player.vx += moveSpeed;
+  p.vx = 0;
+  const moveSpeed = p.crouching ? MOVE_SPEED * 0.5 : MOVE_SPEED;
+  if (inp.left) p.vx -= moveSpeed;
+  if (inp.right) p.vx += moveSpeed;
 
-  if (input.jumpPressed && player.onGround) {
-    const jumpSpeed = player.crouching ? JUMP_SPEED * 0.88 : JUMP_SPEED;
-    player.vy = -jumpSpeed;
-    player.onGround = false;
-    player.squish = 1;
+  if (inp.jumpPressed && p.onGround) {
+    const jumpSpeed = p.crouching ? JUMP_SPEED * 0.88 : JUMP_SPEED;
+    p.vy = -jumpSpeed;
+    p.onGround = false;
+    p.squish = 1;
     playJumpSound();
   }
 
-  player.vy += GRAVITY * dt;
-  player.x += player.vx * dt;
+  p.vy += GRAVITY * dt;
+  p.x += p.vx * dt;
 
-  const horizontalBounds = { x: player.x, y: player.y, width: player.width, height: player.height };
+  const horizontalBounds = { x: p.x, y: p.y, width: p.width, height: p.height };
   for (const platform of level.platforms) {
     if (!rectsOverlap(horizontalBounds, platform)) {
       continue;
     }
 
-    if (player.vx > 0) {
-      const newX = platform.x - player.width;
-      if (player.x > WIDTH && newX <= WIDTH) continue;
-      player.x = newX;
-    } else if (player.vx < 0) {
+    if (p.vx > 0) {
+      const newX = platform.x - p.width;
+      if (p.x > WIDTH && newX <= WIDTH) continue;
+      p.x = newX;
+    } else if (p.vx < 0) {
       const newX = platform.x + platform.width;
-      if (player.x + player.width < 0 && newX >= -player.width) continue;
-      player.x = newX;
+      if (p.x + p.width < 0 && newX >= -p.width) continue;
+      p.x = newX;
     }
 
-    horizontalBounds.x = player.x;
+    horizontalBounds.x = p.x;
   }
 
-  player.y += player.vy * dt;
-  player.onGround = false;
+  p.y += p.vy * dt;
+  p.onGround = false;
 
-  const verticalBounds = { x: player.x, y: player.y, width: player.width, height: player.height };
+  const verticalBounds = { x: p.x, y: p.y, width: p.width, height: p.height };
   for (const platform of level.platforms) {
     if (!rectsOverlap(verticalBounds, platform)) {
       continue;
     }
 
-    if (player.vy > 0) {
-      player.y = platform.y - player.height;
-      player.vy = 0;
-      player.onGround = true;
-    } else if (player.vy < 0) {
-      player.y = platform.y + platform.height;
-      player.vy = 0;
+    if (p.vy > 0) {
+      p.y = platform.y - p.height;
+      p.vy = 0;
+      p.onGround = true;
+    } else if (p.vy < 0) {
+      p.y = platform.y + platform.height;
+      p.vy = 0;
     }
 
-    verticalBounds.y = player.y;
+    verticalBounds.y = p.y;
   }
 
-  const ground = level.platforms.find((p) => p.type === "ground");
-  if (ground && player.y + player.height > ground.y) {
-    player.y = ground.y - player.height;
-    player.vy = 0;
-    player.onGround = true;
+  const ground = level.platforms.find((plat) => plat.type === "ground");
+  if (ground && p.y + p.height > ground.y) {
+    p.y = ground.y - p.height;
+    p.vy = 0;
+    p.onGround = true;
   }
 
-  clampPlayerToWorld();
-
-  if (player.x + player.width <= -2) {
-    player.x += WIDTH;
-  } else if (player.x >= WIDTH + 2) {
-    player.x -= WIDTH;
+  if (p.y > HEIGHT + 100) {
+    if (multiplayerMode) {
+      lastDeathCause = "fall";
+      killPlayerSlot(deathSlot);
+    } else {
+      killPlayer();
+    }
+    inp.jumpPressed = false;
+    return;
   }
 
-  if (!wasOnGround && player.onGround && player.vy === 0) {
+  if (p.x + p.width <= -2) {
+    p.x += WIDTH;
+  } else if (p.x >= WIDTH + 2) {
+    p.x -= WIDTH;
+  }
+
+  if (!wasOnGround && p.onGround && p.vy === 0) {
     playLandSound();
   }
 
-  player.squish = Math.max(0, player.squish - dt * 4);
-  input.jumpPressed = false;
+  p.squish = Math.max(0, p.squish - dt * 4);
+  inp.jumpPressed = false;
+}
+
+function updatePlayer(dt) {
+  if (gameState !== "playing") {
+    player.vx = 0;
+    if (multiplayerMode) player2.vx = 0;
+    return;
+  }
+  if (multiplayerMode) {
+    updateSinglePlayer(player, inputP1, dt, 0);
+    updateSinglePlayer(player2, inputP2, dt, 1);
+  } else {
+    updateSinglePlayer(player, input, dt, 0);
+  }
 }
 
 function updateCoins(dt) {
   for (const coin of coins) {
     coin.bob += dt * 4;
 
-    if (coin.collected) continue;
-    const rects = getPlayerRects();
-    if (rects.some((r) => circleIntersectsRect(coin, r.x, r.y, r.width, r.height))) {
-      coin.collected = true;
-      collectedCoins += 1;
-      playCoinSound();
+    if (multiplayerMode) {
+      if (coin.byP1 && coin.byP2) {
+        continue;
+      }
+      if (
+        player.alive &&
+        !coin.byP1 &&
+        rectsForEntity(player).some((r) => circleIntersectsRect(coin, r.x, r.y, r.width, r.height))
+      ) {
+        coin.byP1 = true;
+        coinsCollectedP1 += 1;
+        playCoinSound();
+      }
+      if (
+        player2.alive &&
+        !coin.byP2 &&
+        rectsForEntity(player2).some((r) => circleIntersectsRect(coin, r.x, r.y, r.width, r.height))
+      ) {
+        coin.byP2 = true;
+        coinsCollectedP2 += 1;
+        playCoinSound();
+      }
+    } else {
+      if (coin.byP1) {
+        continue;
+      }
+      if (getPlayerRects().some((r) => circleIntersectsRect(coin, r.x, r.y, r.width, r.height))) {
+        coin.byP1 = true;
+        collectedCoins += 1;
+        playCoinSound();
+      }
     }
   }
 
-  if (collectedCoins === TOTAL_COINS) {
+  if (multiplayerMode) {
+    if (multiplayerWinReached()) {
+      playWinSound();
+      gameState = "won";
+      syncGameUiState();
+    }
+  } else if (collectedCoins === TOTAL_COINS) {
     playWinSound();
     gameState = "won";
     syncGameUiState();
@@ -891,11 +1107,36 @@ function getBeetleRects() {
 function updateBeetle(dt) {
   const b = level.beetle;
   if (!b) return;
-  const onGroundLevel = player.onGround && (player.y + player.height) >= GROUND_Y - 2;
+
+  let chaseCx = null;
+  if (multiplayerMode) {
+    const candidates = [];
+    if (player.alive && player.onGround && player.y + player.height >= GROUND_Y - 2) {
+      candidates.push(player.x + player.width / 2);
+    }
+    if (player2.alive && player2.onGround && player2.y + player2.height >= GROUND_Y - 2) {
+      candidates.push(player2.x + player2.width / 2);
+    }
+    if (candidates.length > 0) {
+      const beetleCx = b.x + b.width / 2;
+      chaseCx = candidates[0];
+      let bestD = Math.abs(chaseCx - beetleCx);
+      for (let i = 1; i < candidates.length; i += 1) {
+        const d = Math.abs(candidates[i] - beetleCx);
+        if (d < bestD) {
+          bestD = d;
+          chaseCx = candidates[i];
+        }
+      }
+    }
+  } else if (player.onGround && player.y + player.height >= GROUND_Y - 2) {
+    chaseCx = player.x + player.width / 2;
+  }
+
+  const onGroundLevel = chaseCx != null;
   if (gameState === "playing" && onGroundLevel) {
     const beetleCx = b.x + b.width / 2;
-    const playerCx = player.x + player.width / 2;
-    const dx = playerCx - beetleCx;
+    const dx = chaseCx - beetleCx;
     b.vx = dx > 0 ? BEETLE_CHASE_SPEED : dx < 0 ? -BEETLE_CHASE_SPEED : b.vx;
   } else if (gameState === "playing") {
     b.vx = b.vx >= 0 ? BEETLE_SPEED : -BEETLE_SPEED;
@@ -936,37 +1177,47 @@ function updateBeetle(dt) {
 }
 
 function updateSpikes() {
-  const rects = getPlayerRects();
-  for (const r of rects) {
-    const hurtbox = {
-      x: r.x + 5,
-      y: r.y + 5,
-      width: r.width - 10,
-      height: r.height - 5
-    };
+  const targets = multiplayerMode
+    ? [
+        { rects: rectsForEntity(player), slot: 0, alive: player.alive },
+        { rects: rectsForEntity(player2), slot: 1, alive: player2.alive }
+      ].filter((t) => t.alive)
+    : [{ rects: getPlayerRects(), slot: null, alive: true }];
 
-    for (const spike of level.spikes) {
-      const spikeHitbox = {
-        x: spike.x,
-        y: spike.y - spike.height,
-        width: spike.width,
-        height: spike.height
+  for (const { rects, slot } of targets) {
+    for (const r of rects) {
+      const hurtbox = {
+        x: r.x + 5,
+        y: r.y + 5,
+        width: r.width - 10,
+        height: r.height - 5
       };
 
-      if (rectsOverlap(hurtbox, spikeHitbox)) {
-        lastDeathCause = "spikes";
-        playSpikeDeathSound();
-        killPlayer();
-        return;
-      }
-    }
+      for (const spike of level.spikes) {
+        const spikeHitbox = {
+          x: spike.x,
+          y: spike.y - spike.height,
+          width: spike.width,
+          height: spike.height
+        };
 
-    for (const beetleRect of getBeetleRects()) {
-      if (rectsOverlap(hurtbox, beetleRect)) {
-        lastDeathCause = "beetle";
-        playSpikeDeathSound();
-        killPlayer();
-        return;
+        if (rectsOverlap(hurtbox, spikeHitbox)) {
+          lastDeathCause = "spikes";
+          playSpikeDeathSound();
+          if (multiplayerMode) killPlayerSlot(slot);
+          else killPlayer();
+          return;
+        }
+      }
+
+      for (const beetleRect of getBeetleRects()) {
+        if (rectsOverlap(hurtbox, beetleRect)) {
+          lastDeathCause = "beetle";
+          playSpikeDeathSound();
+          if (multiplayerMode) killPlayerSlot(slot);
+          else killPlayer();
+          return;
+        }
       }
     }
   }
@@ -2196,7 +2447,8 @@ function drawBeetle(offsetX, offsetY) {
 function drawCoins() {
   const size = 26;
   for (const coin of coins) {
-    if (coin.collected) {
+    const done = multiplayerMode ? coin.byP1 && coin.byP2 : coin.byP1;
+    if (done) {
       continue;
     }
 
@@ -2209,6 +2461,7 @@ function drawCoins() {
       ctx.translate(x, y);
       ctx.drawImage(arrowImage, -size / 2, -size / 2, size, size);
       ctx.restore();
+      drawMultiplayerCoinClaimRing(x, y, coin.radius, coin);
     } else if (platformTheme === "backrooms" && bottleImage.complete && bottleImage.naturalWidth) {
       const bottleW = 18;
       const bottleH = 28;
@@ -2216,6 +2469,7 @@ function drawCoins() {
       ctx.translate(x, y);
       ctx.drawImage(bottleImage, -bottleW / 2, -bottleH / 2, bottleW, bottleH);
       ctx.restore();
+      drawMultiplayerCoinClaimRing(x, y, coin.radius, coin);
     } else if (platformTheme === "jungle") {
       ctx.save();
       ctx.translate(x, y);
@@ -2251,6 +2505,7 @@ function drawCoins() {
       }
 
       ctx.restore();
+      drawMultiplayerCoinClaimRing(x, y, coin.radius, coin);
     } else if (platformTheme === "blank") {
       ctx.fillStyle = "#000000";
       ctx.beginPath();
@@ -2267,6 +2522,7 @@ function drawCoins() {
       ctx.fillText("P", x, y + 0.5);
       ctx.textAlign = "start";
       ctx.textBaseline = "alphabetic";
+      drawMultiplayerCoinClaimRing(x, y, coin.radius, coin);
     } else {
       ctx.fillStyle = "#ffd84d";
       ctx.beginPath();
@@ -2275,50 +2531,88 @@ function drawCoins() {
       ctx.strokeStyle = "#c79800";
       ctx.lineWidth = 3;
       ctx.stroke();
+      drawMultiplayerCoinClaimRing(x, y, coin.radius, coin);
     }
   }
 }
 
-function drawPlayer(offsetX, offsetY) {
+/** blobIndex 0 = player 1 (arrows), 1 = player 2 (WASD) — different colors in multiplayer. */
+function drawPlayerBlob(p, offsetX, offsetY, blobIndex) {
   offsetX = offsetX ?? 0;
   offsetY = offsetY ?? 0;
-  const squashX = 1 + player.squish * 0.25;
-  const squashY = 1 - player.squish * 0.2;
-  const centerX = player.x + player.width / 2 + offsetX;
-  const centerY = player.y + player.height / 2 + offsetY;
+  const p2 = multiplayerMode && blobIndex === 1;
+  const squashX = 1 + p.squish * 0.25;
+  const squashY = 1 - p.squish * 0.2;
+  const centerX = p.x + p.width / 2 + offsetX;
+  const centerY = p.y + p.height / 2 + offsetY;
 
   ctx.save();
   ctx.translate(centerX, centerY);
   ctx.scale(squashX, squashY);
 
-  const r = player.width / 2;
-  const h = player.height / 2;
+  const r = p.width / 2;
+  const h = p.height / 2;
   const gradient = ctx.createRadialGradient(-r * 0.3, -h * 0.3, 0, 0, 0, r * 1.2);
   if (platformTheme === "orange") {
-    gradient.addColorStop(0, "#e8a88a");
-    gradient.addColorStop(0.4, "#dd9580");
-    gradient.addColorStop(0.85, "#d58a75");
-    gradient.addColorStop(1, "#b87262");
+    if (p2) {
+      gradient.addColorStop(0, "#c4a8e8");
+      gradient.addColorStop(0.4, "#a892d4");
+      gradient.addColorStop(0.85, "#8a78c0");
+      gradient.addColorStop(1, "#6e5aa0");
+    } else {
+      gradient.addColorStop(0, "#e8a88a");
+      gradient.addColorStop(0.4, "#dd9580");
+      gradient.addColorStop(0.85, "#d58a75");
+      gradient.addColorStop(1, "#b87262");
+    }
   } else if (platformTheme === "backrooms") {
-    gradient.addColorStop(0, "#d0d0d0");
-    gradient.addColorStop(0.4, "#b8b8b8");
-    gradient.addColorStop(0.85, "#a8a8a8");
-    gradient.addColorStop(1, "#888888");
+    if (p2) {
+      gradient.addColorStop(0, "#b0b0c8");
+      gradient.addColorStop(0.4, "#9898b0");
+      gradient.addColorStop(0.85, "#808098");
+      gradient.addColorStop(1, "#606078");
+    } else {
+      gradient.addColorStop(0, "#d0d0d0");
+      gradient.addColorStop(0.4, "#b8b8b8");
+      gradient.addColorStop(0.85, "#a8a8a8");
+      gradient.addColorStop(1, "#888888");
+    }
   } else if (platformTheme === "jungle") {
-    gradient.addColorStop(0, "#c38b4a");
-    gradient.addColorStop(0.4, "#a86f32");
-    gradient.addColorStop(0.85, "#8c5726");
-    gradient.addColorStop(1, "#5b3816");
+    if (p2) {
+      gradient.addColorStop(0, "#6ab86a");
+      gradient.addColorStop(0.4, "#4a9848");
+      gradient.addColorStop(0.85, "#3a7838");
+      gradient.addColorStop(1, "#285828");
+    } else {
+      gradient.addColorStop(0, "#c38b4a");
+      gradient.addColorStop(0.4, "#a86f32");
+      gradient.addColorStop(0.85, "#8c5726");
+      gradient.addColorStop(1, "#5b3816");
+    }
   } else if (platformTheme === "blank") {
-    gradient.addColorStop(0, "#2b2b2f");
-    gradient.addColorStop(0.4, "#18181b");
-    gradient.addColorStop(0.85, "#0c0c0e");
-    gradient.addColorStop(1, "#000000");
+    if (p2) {
+      gradient.addColorStop(0, "#1a2a28");
+      gradient.addColorStop(0.4, "#0e1816");
+      gradient.addColorStop(0.85, "#081010");
+      gradient.addColorStop(1, "#040808");
+    } else {
+      gradient.addColorStop(0, "#2b2b2f");
+      gradient.addColorStop(0.4, "#18181b");
+      gradient.addColorStop(0.85, "#0c0c0e");
+      gradient.addColorStop(1, "#000000");
+    }
   } else {
-    gradient.addColorStop(0, "#7ae8a8");
-    gradient.addColorStop(0.4, "#5dd992");
-    gradient.addColorStop(0.85, "#53d58d");
-    gradient.addColorStop(1, "#3db872");
+    if (p2) {
+      gradient.addColorStop(0, "#7ac4f0");
+      gradient.addColorStop(0.4, "#5aa8e0");
+      gradient.addColorStop(0.85, "#4890d0");
+      gradient.addColorStop(1, "#2d70b0");
+    } else {
+      gradient.addColorStop(0, "#7ae8a8");
+      gradient.addColorStop(0.4, "#5dd992");
+      gradient.addColorStop(0.85, "#53d58d");
+      gradient.addColorStop(1, "#3db872");
+    }
   }
   ctx.fillStyle = gradient;
   ctx.beginPath();
@@ -2337,15 +2631,17 @@ function drawPlayer(offsetX, offsetY) {
     ctx.fill();
   }
 
-  const eyeY = player.crouching ? 2 : -3;
-  const eyeR = player.crouching ? 2.5 : 3.5;
+  const eyeY = p.crouching ? 2 : -3;
+  const eyeR = p.crouching ? 2.5 : 3.5;
   const eyeColor =
     platformTheme === "orange"
       ? "#4a2020"
       : platformTheme === "backrooms"
         ? "#505050"
         : platformTheme === "blank"
-          ? "#f2f2f2"
+          ? p2
+            ? "#6ec4a8"
+            : "#f2f2f2"
           : "#173927";
   ctx.fillStyle = eyeColor;
   ctx.beginPath();
@@ -2360,6 +2656,10 @@ function drawPlayer(offsetX, offsetY) {
   ctx.stroke();
 
   ctx.restore();
+}
+
+function drawPlayer(offsetX, offsetY) {
+  drawPlayerBlob(player, offsetX, offsetY, 0);
 }
 
 function formatTime(seconds) {
@@ -2380,14 +2680,43 @@ function drawHud() {
             ? "'Wild Jungle SVG', system-ui, sans-serif"
           : "sans-serif";
   ctx.fillStyle = "rgba(16, 25, 47, 0.72)";
-  ctx.fillRect(18, 18, 220, 86);
+  const hudH = multiplayerMode ? (platformTheme === "blank" ? 100 : 118) : platformTheme === "blank" ? 86 : 86;
+  const hudW = multiplayerMode ? 340 : 220;
+  ctx.fillRect(18, 18, hudW, hudH);
 
   ctx.fillStyle = "#ffffff";
   const hudFontSize = platformTheme === "blank" ? 14 : 24;
+  const hudSmall = platformTheme === "blank" ? 11 : 17;
   ctx.font = `bold ${hudFontSize}px ${fontFamily}`;
   ctx.textAlign = "start";
   const collected = getCollectedCoins();
-  if (platformTheme === "orange") {
+  if (multiplayerMode) {
+    const pairs = multiplayerPairsDoneCount();
+    if (platformTheme === "orange") {
+      const pct = Math.round((pairs / TOTAL_COINS) * 100);
+      ctx.fillText(`OEE: ${pct}% (both grabbed)`, 32, 46);
+    } else if (platformTheme === "blank") {
+      ctx.fillText(`Done: ${pairs}/${TOTAL_COINS} both`, 32, 42);
+    } else if (platformTheme === "backrooms") {
+      ctx.fillText(`Both: ${pairs}/${TOTAL_COINS}`, 32, 46);
+    } else if (platformTheme === "jungle") {
+      ctx.fillText(`Both: ${pairs}/${TOTAL_COINS} bananas`, 32, 46);
+    } else {
+      ctx.fillText(`Both grabbed: ${pairs}/${TOTAL_COINS}`, 32, 46);
+    }
+    ctx.font = `bold ${hudSmall}px ${fontFamily}`;
+    ctx.fillText(
+      `P1 ↑ ${coinsCollectedP1}/10 · P2 WASD ${coinsCollectedP2}/10 · ring 1|2`,
+      32,
+      platformTheme === "blank" ? 62 : 72
+    );
+    ctx.font = `bold ${hudFontSize}px ${fontFamily}`;
+    const l1 = player.alive ? MAX_DEATHS - deaths1 : 0;
+    const l2 = player2.alive ? MAX_DEATHS - deaths2 : 0;
+    const out1 = !player.alive ? " (out)" : "";
+    const out2 = !player2.alive ? " (out)" : "";
+    ctx.fillText(`P1 lives: ${l1}${out1}   P2 lives: ${l2}${out2}`, 32, platformTheme === "blank" ? 82 : 98);
+  } else if (platformTheme === "orange") {
     const pct = Math.round((collected / TOTAL_COINS) * 100);
     ctx.fillText(`OEE: ${pct}%`, 32, 50);
   } else if (platformTheme === "blank") {
@@ -2399,7 +2728,9 @@ function drawHud() {
   } else {
     ctx.fillText(`Coins: ${collected}/${TOTAL_COINS}`, 32, 50);
   }
-  ctx.fillText(`Lives: ${MAX_DEATHS - deaths}`, 32, platformTheme === "blank" ? 72 : 84);
+  if (!multiplayerMode) {
+    ctx.fillText(`Lives: ${MAX_DEATHS - deaths}`, 32, platformTheme === "blank" ? 72 : 84);
+  }
 
   ctx.fillStyle = "rgba(16, 25, 47, 0.72)";
   ctx.fillRect(WIDTH - 88, 18, 70, 40);
@@ -2456,44 +2787,101 @@ function drawOverlay() {
     return;
   }
 
-  ctx.fillText(gameState === "won" ? "You Win!" : "Game Over", WIDTH / 2, 210);
+  if (gameState === "won") {
+    const winTitle = multiplayerMode
+      ? multiplayerAllCoinsClaimedByBoth()
+        ? `${DISPLAY_NAME_P1} & ${DISPLAY_NAME_P2} win!`
+        : coinsCollectedP1 >= TOTAL_COINS
+          ? `${DISPLAY_NAME_P1} wins!`
+          : `${DISPLAY_NAME_P2} wins!`
+      : `${DISPLAY_NAME_SOLO} wins!`;
+    ctx.fillText(winTitle, WIDTH / 2, 210);
+  } else {
+    ctx.fillText("Game Over", WIDTH / 2, 210);
+  }
 
   ctx.font = `${bodySize}px ${fontFamily}`;
   if (gameState === "won") {
-    const winMsg =
+    let whoGrabbed = DISPLAY_NAME_SOLO;
+    if (multiplayerMode) {
+      if (multiplayerAllCoinsClaimedByBoth()) {
+        whoGrabbed = `${DISPLAY_NAME_P1} & ${DISPLAY_NAME_P2}`;
+      } else if (coinsCollectedP1 >= TOTAL_COINS) {
+        whoGrabbed = DISPLAY_NAME_P1;
+      } else {
+        whoGrabbed = DISPLAY_NAME_P2;
+      }
+    }
+    let winMsg =
       platformTheme === "orange"
-        ? "You grabbed all GS Arrows."
+        ? `${whoGrabbed} grabbed all GS Arrows.`
         : platformTheme === "backrooms"
-          ? "You grabbed all Bottles."
+          ? `${whoGrabbed} grabbed all Bottles.`
           : platformTheme === "blank"
-            ? "You grabbed all Points."
+            ? `${whoGrabbed} grabbed all Points.`
             : platformTheme === "jungle"
-              ? "You grabbed all Bananas."
-              : "You grabbed all Coins.";
+              ? `${whoGrabbed} grabbed all Bananas.`
+              : `${whoGrabbed} grabbed all Coins.`;
+    if (multiplayerMode) {
+      if (multiplayerAllCoinsClaimedByBoth()) {
+        winMsg += ` Perfect — every pickup by both. (${DISPLAY_NAME_P1}: ${coinsCollectedP1} · ${DISPLAY_NAME_P2}: ${coinsCollectedP2})`;
+      } else if (coinsCollectedP1 >= TOTAL_COINS) {
+        winMsg += ` ${DISPLAY_NAME_P1} cleared all ${TOTAL_COINS} pickups! (${DISPLAY_NAME_P2}: ${coinsCollectedP2})`;
+      } else {
+        winMsg += ` ${DISPLAY_NAME_P2} cleared all ${TOTAL_COINS} pickups! (${DISPLAY_NAME_P1}: ${coinsCollectedP1})`;
+      }
+    }
     ctx.fillText(winMsg, WIDTH / 2, 260);
   } else {
-    let loseMsg = "Time ran out.";
+    let loseMsg = multiplayerMode
+      ? `${DISPLAY_NAME_P1} & ${DISPLAY_NAME_P2} ran out of time.`
+      : `${DISPLAY_NAME_SOLO} ran out of time.`;
     if (lostReason === "deaths") {
-      if (platformTheme === "orange") {
-        loseMsg = lastDeathCause === "spikes" ? "You died by the saws." : lastDeathCause === "beetle" ? "The Virus got you." : "The blob died 3 times and lost the run.";
+      if (multiplayerMode) {
+        const both = `${DISPLAY_NAME_P1} & ${DISPLAY_NAME_P2}`;
+        loseMsg =
+          lastDeathCause === "spikes"
+            ? `${both} are out of lives. Last hit: spikes.`
+            : lastDeathCause === "beetle"
+              ? `${both} are out of lives. Last hit: the chaser.`
+              : lastDeathCause === "fall"
+                ? `${both} are out of lives. Last hit: fell off the map.`
+                : `${both} are out of lives before finishing.`;
+      } else if (platformTheme === "orange") {
+        loseMsg =
+          lastDeathCause === "spikes"
+            ? `${DISPLAY_NAME_SOLO} died by the saws.`
+            : lastDeathCause === "beetle"
+              ? `The Virus got ${DISPLAY_NAME_SOLO}.`
+              : `${DISPLAY_NAME_SOLO} died 3 times and lost the run.`;
       } else if (platformTheme === "backrooms") {
-        loseMsg = lastDeathCause === "spikes" ? "You died by the traps." : lastDeathCause === "beetle" ? "The Entity got you." : "The blob died 3 times and lost the run.";
+        loseMsg =
+          lastDeathCause === "spikes"
+            ? `${DISPLAY_NAME_SOLO} died by the traps.`
+            : lastDeathCause === "beetle"
+              ? `The Entity got ${DISPLAY_NAME_SOLO}.`
+              : `${DISPLAY_NAME_SOLO} died 3 times and lost the run.`;
       } else if (platformTheme === "blank") {
         loseMsg =
           lastDeathCause === "spikes"
-            ? "You died by the objects."
+            ? `${DISPLAY_NAME_SOLO} died by the objects.`
             : lastDeathCause === "beetle"
-              ? "The Creature got you."
-              : "The blob died 3 times and lost the run.";
+              ? `The Creature got ${DISPLAY_NAME_SOLO}.`
+              : `${DISPLAY_NAME_SOLO} died 3 times and lost the run.`;
       } else if (platformTheme === "jungle") {
         loseMsg =
           lastDeathCause === "spikes"
-            ? "You died by the snakes."
+            ? `${DISPLAY_NAME_SOLO} died by the snakes.`
             : lastDeathCause === "beetle"
-              ? "The Spider got you."
-              : "The blob died 3 times and lost the run.";
+              ? `The Spider got ${DISPLAY_NAME_SOLO}.`
+              : `${DISPLAY_NAME_SOLO} died 3 times and lost the run.`;
       } else {
-        loseMsg = lastDeathCause === "spikes" ? "You died by the spikes." : lastDeathCause === "beetle" ? "The Beetle got you." : "The blob died 3 times and lost the run.";
+        loseMsg =
+          lastDeathCause === "spikes"
+            ? `${DISPLAY_NAME_SOLO} died by the spikes.`
+            : lastDeathCause === "beetle"
+              ? `The Beetle got ${DISPLAY_NAME_SOLO}.`
+              : `${DISPLAY_NAME_SOLO} died 3 times and lost the run.`;
       }
     }
     ctx.fillText(loseMsg, WIDTH / 2, 260);
@@ -2539,13 +2927,26 @@ function render() {
     if (level.beetle.x < 0) drawBeetle(WIDTH, 0);
   }
   drawBeetle();
-  if (player.x + player.width > WIDTH) {
-    drawPlayer(-WIDTH, 0);
+  if (multiplayerMode) {
+    if (player.alive) {
+      if (player.x + player.width > WIDTH) drawPlayerBlob(player, -WIDTH, 0, 0);
+      if (player.x < 0) drawPlayerBlob(player, WIDTH, 0, 0);
+      drawPlayerBlob(player, 0, 0, 0);
+    }
+    if (player2.alive) {
+      if (player2.x + player2.width > WIDTH) drawPlayerBlob(player2, -WIDTH, 0, 1);
+      if (player2.x < 0) drawPlayerBlob(player2, WIDTH, 0, 1);
+      drawPlayerBlob(player2, 0, 0, 1);
+    }
+  } else {
+    if (player.x + player.width > WIDTH) {
+      drawPlayer(-WIDTH, 0);
+    }
+    if (player.x < 0) {
+      drawPlayer(WIDTH, 0);
+    }
+    drawPlayer();
   }
-  if (player.x < 0) {
-    drawPlayer(WIDTH, 0);
-  }
-  drawPlayer();
   drawHud();
   drawOverlay();
 }
@@ -2564,6 +2965,25 @@ function gameLoop(timestamp) {
 }
 
 function setKeyState(code, pressed) {
+  if (multiplayerMode) {
+    if (code === "ArrowLeft") inputP1.left = pressed;
+    if (code === "ArrowRight") inputP1.right = pressed;
+    if (code === "ArrowUp") {
+      if (pressed && !inputP1.jump) inputP1.jumpPressed = true;
+      inputP1.jump = pressed;
+    }
+    if (code === "ArrowDown") inputP1.crouch = pressed;
+
+    if (code === "KeyA") inputP2.left = pressed;
+    if (code === "KeyD") inputP2.right = pressed;
+    if (code === "KeyW") {
+      if (pressed && !inputP2.jump) inputP2.jumpPressed = true;
+      inputP2.jump = pressed;
+    }
+    if (code === "KeyS") inputP2.crouch = pressed;
+    return;
+  }
+
   if (code === "ArrowLeft" || code === "KeyA") {
     input.left = pressed;
   }
@@ -2597,7 +3017,18 @@ window.addEventListener("keydown", (event) => {
     return;
   }
 
-  if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Space", "KeyS"].includes(event.code)) {
+  const soloKeys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Space", "KeyS"];
+  const mpKeys = [
+    "ArrowLeft",
+    "ArrowRight",
+    "ArrowUp",
+    "ArrowDown",
+    "KeyW",
+    "KeyA",
+    "KeyS",
+    "KeyD"
+  ];
+  if (multiplayerMode ? mpKeys.includes(event.code) : soloKeys.includes(event.code)) {
     event.preventDefault();
   }
 
@@ -2620,13 +3051,23 @@ window.addEventListener("keyup", (event) => {
   }
 
   function setPointerState(left, right, jump, crouch, restart) {
-    if (left !== undefined) input.left = left;
-    if (right !== undefined) input.right = right;
-    if (jump !== undefined) {
-      if (jump && !input.jump) input.jumpPressed = true;
-      input.jump = !!jump;
+    if (multiplayerMode) {
+      if (left !== undefined) inputP1.left = left;
+      if (right !== undefined) inputP1.right = right;
+      if (jump !== undefined) {
+        if (jump && !inputP1.jump) inputP1.jumpPressed = true;
+        inputP1.jump = !!jump;
+      }
+      if (crouch !== undefined) inputP1.crouch = crouch;
+    } else {
+      if (left !== undefined) input.left = left;
+      if (right !== undefined) input.right = right;
+      if (jump !== undefined) {
+        if (jump && !input.jump) input.jumpPressed = true;
+        input.jump = !!jump;
+      }
+      if (crouch !== undefined) input.crouch = crouch;
     }
-    if (crouch !== undefined) input.crouch = crouch;
     if (restart) resetGame();
   }
 
@@ -2659,6 +3100,23 @@ window.addEventListener("keyup", (event) => {
   pauseButtonEl = document.querySelector(".mobile-btn-pause");
   // Sync initial UI state.
   syncGameUiState();
+})();
+
+(function initMultiplayerToggle() {
+  try {
+    if (localStorage.getItem(MP_STORAGE_KEY) === "1") multiplayerMode = true;
+  } catch (_) {}
+  const el = document.getElementById("multiplayer-mode");
+  if (el) {
+    el.checked = multiplayerMode;
+    el.addEventListener("change", () => {
+      multiplayerMode = el.checked;
+      try {
+        localStorage.setItem(MP_STORAGE_KEY, multiplayerMode ? "1" : "0");
+      } catch (_) {}
+      resetGame();
+    });
+  }
 })();
 
 resetGame();

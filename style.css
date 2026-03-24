@@ -116,6 +116,21 @@ canvas {
   min-width: 110px;
 }
 
+.multiplayer-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 52rem;
+  cursor: pointer;
+  line-height: 1.45;
+}
+
+.multiplayer-toggle input {
+  margin-top: 4px;
+  flex-shrink: 0;
+  accent-color: #53d58d;
+}
+
 .settings input[type="range"] {
   width: 160px;
   height: 6px;
